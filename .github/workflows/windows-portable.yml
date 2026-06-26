@@ -1,0 +1,97 @@
+name: Windows Portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag name for release"
+        required: false
+        default: nightly
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.workflow }}
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  CARGO_TERM_COLOR: always
+
+permissions: {}
+
+jobs:
+  tagname:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag.outputs.tag }}
+    steps:
+      - id: vars
+        shell: bash
+        run: echo "sha_short=${GITHUB_SHA::7}" | tee -a $GITHUB_OUTPUT
+
+      - if: github.event_name == 'workflow_dispatch'
+        run: echo "TAG_NAME=${{ github.event.inputs.tag_name }}" | tee -a $GITHUB_ENV
+
+      - if: github.event_name == 'push'
+        run: |
+          TAG_NAME=${{ github.ref }}
+          echo "TAG_NAME=${TAG_NAME#refs/tags/}" | tee -a $GITHUB_ENV
+
+      - id: tag
+        run: echo "tag=$TAG_NAME" | tee -a $GITHUB_OUTPUT
+
+  windows:
+    runs-on: windows-latest
+    needs: tagname
+    env:
+      RELEASE_TAG_NAME: ${{ needs.tagname.outputs.tag_name }}
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Update rust
+        run: rustup update --no-self-update
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: Build
+        run: cargo build --frozen --profile release-lto
+
+      - name: Crate msi installer
+        run: |
+          candle.exe -arch "x64" -ext WixUIExtension -ext WixUtilExtension \
+            -out "./lapce.wixobj" "extra/windows/wix/lapce.wxs"
+
+          light.exe -ext WixUIExtension -ext WixUtilExtension \
+            -out "./Lapce-windows.msi" -sice:ICE61 -sice:ICE91 \
+            "./lapce.wixobj"
+
+      - name: Create portable
+        shell: pwsh
+        run: |
+          cargo build --profile release-lto --features lapce-app/portable
+          Compress-Archive ./target/release-lto/lapce.exe ./Lapce-windows-portable.zip
+
+      - name: Create lapce-proxy archive
+        shell: pwsh
+        run: |
+          $file = [System.IO.File]::Open((Join-Path $PWD '.\target\release-lto\lapce-proxy.exe'), [System.IO.FileMode]::Open)
+          $archive = [System.IO.File]::Create((Join-Path $PWD '.\lapce-proxy-windows-x86_64.gz'))
+          $compressor = [System.IO.Compression.GZipStream]::new($archive, [System.IO.Compression.CompressionMode]::Compress)
+          $file.CopyTo($compressor)
+          Start-Sleep -Seconds 10
+          $compressor.close()
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad786f024f
+        with:
+          name: lapce-windows
+          path: |
+            ./lapce-proxy-windows-*.gz
+            ./Lapce-windows-portable.zip
+            ./Lapce-windows.msi
+          retention-days: 1
