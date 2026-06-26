@@ -87,7 +87,7 @@ jobs:
           Start-Sleep -Seconds 10
           $compressor.close()
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad786f024f
+      - uses: actions/upload-artifact@v4
         with:
           name: lapce-windows
           path: |
