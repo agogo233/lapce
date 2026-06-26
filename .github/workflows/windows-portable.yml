@@ -41,6 +41,48 @@ jobs:
       - id: tag
         run: echo "tag=$TAG_NAME" | tee -a $GITHUB_OUTPUT
 
+  proxy:
+    runs-on: ubuntu-latest
+    needs: tagname
+    env:
+      RELEASE_TAG_NAME: ${{ needs.tagname.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-proxy-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Update rust
+        run: rustup update --no-self-update
+
+      - name: Add musl target
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: Build lapce-proxy (static musl)
+        run: cargo build --frozen --profile release-lto -p lapce-proxy --target x86_64-unknown-linux-musl
+
+      - name: Package lapce-proxy
+        run: |
+          cp target/x86_64-unknown-linux-musl/release-lto/lapce-proxy ./
+          zip lapce-proxy-x86_64-linux.zip lapce-proxy
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lapce-proxy-linux
+          path: ./lapce-proxy-x86_64-linux.zip
+          retention-days: 1
+
   windows:
     runs-on: windows-latest
     needs: tagname
@@ -54,14 +96,24 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-windows-cargo-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Update rust
         run: rustup update --no-self-update
 
       - name: Fetch dependencies
         run: cargo fetch --locked
 
-      - name: Build
-        run: cargo build --frozen --profile release-lto
+      - name: Build lapce-app (no updater)
+        run: |
+          cargo build --frozen --profile release-lto -p lapce-app --no-default-features --features vendored-fonts
+          cargo build --frozen --profile release-lto -p lapce-proxy
 
       - name: Crate msi installer
         run: |
@@ -75,14 +127,14 @@ jobs:
       - name: Create portable
         shell: pwsh
         run: |
-          cargo build --profile release-lto --features lapce-app/portable
-          Compress-Archive ./target/release-lto/lapce.exe ./Lapce-windows-portable.zip
+          cargo build --profile release-lto --no-default-features -p lapce-app --features portable,vendored-fonts
+          Compress-Archive -Path ./target/release-lto/lapce.exe, ./target/release-lto/lapce-proxy.exe -DestinationPath ./Lapce-windows-portable.zip
 
       - name: Create lapce-proxy archive
         shell: pwsh
         run: |
           $file = [System.IO.File]::Open((Join-Path $PWD '.\target\release-lto\lapce-proxy.exe'), [System.IO.FileMode]::Open)
-          $archive = [System.IO.File]::Create((Join-Path $PWD '.\lapce-proxy-windows-x86_64.gz'))
+          $archive = [System.IO.File]::Create((Join-Path $PWD '.\lapce-proxy-x86_64-windows.exe.gz'))
           $compressor = [System.IO.Compression.GZipStream]::new($archive, [System.IO.Compression.CompressionMode]::Compress)
           $file.CopyTo($compressor)
           Start-Sleep -Seconds 10
@@ -92,7 +144,7 @@ jobs:
         with:
           name: lapce-windows
           path: |
-            ./lapce-proxy-windows-*.gz
+            ./lapce-proxy-*.gz
             ./Lapce-windows-portable.zip
             ./Lapce-windows.msi
           retention-days: 1
